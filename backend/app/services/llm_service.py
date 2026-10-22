@@ -276,7 +276,8 @@ def _call_gemini_image(image_b64: str, mime_type: str, texto_ciudadano: str) -> 
             }],
             "generationConfig": {
                 "temperature": 0,
-                "maxOutputTokens": 1024,
+                "maxOutputTokens": 2048,
+                "thinkingConfig": {"thinkingLevel": "minimal"},
                 "responseMimeType": "application/json",
                 "responseSchema": _strip_for_gemini(ImageVerdict.model_json_schema()),
             },
