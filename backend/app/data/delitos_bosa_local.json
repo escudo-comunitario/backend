@@ -1,0 +1,17 @@
+{
+  "_aviso": "DATOS DE EJEMPLO. Reemplazar por el extracto real de datos.gov.co / Datos Abiertos Bogotá antes del pitch.",
+  "fuente": "Datos Abiertos Bogotá - Delitos Informáticos Bosa",
+  "por_modalidad_mes": {
+    "Suplantación de Billetera Digital (Nequi / Daviplata)": 28,
+    "Falsa Oferta Laboral con Anticipo de Dinero": 17,
+    "Phishing bancario por enlace": 22,
+    "Mensaje institucional legítimo": 0,
+    "Posible fraude sin clasificar": 9
+  },
+  "por_upz_mes": {
+    "Bosa Central": 21,
+    "Bosa Occidental": 19,
+    "Tintal Sur": 14,
+    "El Porvenir": 22
+  }
+}
