@@ -1,5 +1,6 @@
 """Inferencia con Structured Outputs (Pydantic v2). Timeout duro de 2 s -> None => fallback offline."""
 import json
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
 from typing import Optional
@@ -7,8 +8,11 @@ from typing import Optional
 import httpx
 from app.models.schemas import LLMVerdict
 
+log = logging.getLogger("escudo.llm")
 TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "2.0"))
 _pool = ThreadPoolExecutor(max_workers=4)
+# Cliente persistente: reutiliza la conexión HTTPS y se ahorra el saludo TLS en cada análisis.
+_client = httpx.Client()
 
 SYSTEM = """Eres el analista antifraude de Escudo Comunitario, una herramienta para vecinos de Bosa (Bogotá), muchos de ellos adultos mayores.
 Recibes un mensaje que un ciudadano recibió (SMS, WhatsApp, llamada transcrita, correo). Tu tarea es decidir si es un intento de fraude.
@@ -65,7 +69,7 @@ def _strip_for_gemini(schema):
 
 
 def _call_openai(texto: str) -> str:
-    r = httpx.post(
+    r = _client.post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
         timeout=TIMEOUT,
@@ -83,7 +87,7 @@ def _call_openai(texto: str) -> str:
 
 def _call_gemini(texto: str) -> str:
     model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-    r = httpx.post(
+    r = _client.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         params={"key": os.environ["GEMINI_API_KEY"]},
         timeout=TIMEOUT,
@@ -101,18 +105,49 @@ def _call_gemini(texto: str) -> str:
     return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
+def _limpio(e: Exception) -> str:
+    """Texto del error sin la API key (los errores de httpx incluyen la URL con la llave)."""
+    msg = f"{type(e).__name__}: {e}"
+    for k in (os.getenv("GEMINI_API_KEY"), os.getenv("OPENAI_API_KEY")):
+        if k:
+            msg = msg.replace(k, "***")
+    return msg[:300]
+
+
 def analizar_con_llm(texto_anonimo: str) -> Optional[LLMVerdict]:
-    """Devuelve el veredicto validado o None si falla/tarda más de TIMEOUT."""
+    """Devuelve el veredicto validado o None si falla. Cada fallo deja el motivo en la terminal."""
     provider = os.getenv("LLM_PROVIDER", "openai").lower()
     key = os.getenv("GEMINI_API_KEY") if provider == "gemini" else os.getenv("OPENAI_API_KEY")
     if not key:
+        log.warning("LLM sin API key (provider=%s) -> responde la caché", provider)
         return None
     fn = _call_gemini if provider == "gemini" else _call_openai
     try:
         raw = _pool.submit(fn, texto_anonimo).result(timeout=TIMEOUT)
-        verdict = LLMVerdict.model_validate_json(raw)
-        return verdict if _es_coherente(verdict) else None
-    except (FutTimeout, Exception):
+    except FutTimeout:
+        log.warning("LLM tardó más de %.1f s -> responde la caché", TIMEOUT)
         return None
+    except Exception as e:
+        log.warning("LLM falló en la llamada: %s -> responde la caché", _limpio(e))
+        return None
+    try:
+        verdict = LLMVerdict.model_validate_json(raw)
+    except Exception as e:
+        log.warning("LLM devolvió un JSON que no cumple el esquema: %s -> responde la caché", _limpio(e))
+        return None
+    if not _es_coherente(verdict):
+        log.warning("LLM devolvió nivel y color incoherentes (%s/%s) -> responde la caché",
+                    verdict.nivel_riesgo, verdict.color_semaforo)
+        return None
+    return verdict
 
-    
+
+def precalentar() -> None:
+    """Abre la conexión HTTPS al arrancar para que el primer análisis no pague ese costo."""
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    url = ("https://generativelanguage.googleapis.com" if provider == "gemini"
+           else "https://api.openai.com")
+    try:
+        _client.get(url, timeout=3.0)
+    except Exception:
+        pass
