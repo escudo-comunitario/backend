@@ -5,7 +5,6 @@ load_dotenv(".env")
 KEY = os.environ["GEMINI_API_KEY"]
 MSG = "Su cuenta sera bloqueada hoy. Entre a http://banco-seguro.xyz y dicte el codigo que le llego por SMS"
 MODELOS = [
-    "gemini-2.5-flash-lite",
     "gemini-flash-lite-latest",
     "gemini-2.5-flash",
     "gemini-3.5-flash-lite",

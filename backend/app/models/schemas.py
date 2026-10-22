@@ -81,3 +81,36 @@ class StatsResponse(BaseModel):
     por_modalidad: Dict[str, int]
     por_upz: Dict[str, int]
     historico_bosa: Dict[str, int] = {}
+
+
+# ---------- /api/analyze-image ----------
+class ImageVerdict(BaseModel):
+    """Veredicto estructurado que devuelve Gemini Vision al analizar un comprobante."""
+    model_config = ConfigDict(extra="forbid")
+
+    es_autentico: Literal["AUTENTICO", "SOSPECHOSO", "FALSO"]
+    nivel_riesgo: Literal["ALTO", "MEDIO", "BAJO"]
+    color_semaforo: Literal["ROJO", "AMARILLO", "VERDE"]
+    entidad_detectada: str          # "Nequi", "Daviplata", "No identificada", …
+    senales_detectadas: List[str]   # Máximo 4 señales encontradas
+    url_qr_extraida: str            # URL del QR si hay uno; "" si no hay QR visible
+    explicacion_ciudadana: str      # ≤ 25 palabras, español colombiano sencillo
+    audio_guion: str                # ≤ 15 palabras, para leer en voz alta
+    recomendaciones: List[str]      # Exactamente 2 acciones
+
+
+class AnalyzeImageResponse(BaseModel):
+    id_analisis: str
+    timestamp: str
+    es_autentico: str
+    nivel_riesgo: str
+    color_semaforo: str
+    entidad_detectada: str
+    senales_detectadas: List[str]
+    url_qr_extraida: Optional[str]
+    qr_dominio_legitimo: Optional[bool]  # None si no había QR
+    explicacion_ciudadana: str
+    audio_guion: str
+    recomendaciones: List[str]
+    evidencia_criptografica: EvidenciaCriptografica
+    datos_abiertos_referencia: DatosAbiertosReferencia

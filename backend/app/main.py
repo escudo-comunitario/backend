@@ -6,7 +6,7 @@ import threading
 
 from app.database import init_db
 from app.services import llm_service
-from app.routers import analyze, reports, integrity, campaigns, stats
+from app.routers import analyze, reports, integrity, campaigns, stats, analyze_image
 
 
 @asynccontextmanager
@@ -25,5 +25,5 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (analyze, reports, integrity, campaigns, stats):
+for r in (analyze, reports, integrity, campaigns, stats, analyze_image):
     app.include_router(r.router, prefix="/api")
