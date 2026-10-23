@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 UPZS = ["Bosa Central", "Bosa Occidental", "Tintal Sur", "El Porvenir"]
 UPZLiteral = Literal["Bosa Central", "Bosa Occidental", "Tintal Sur", "El Porvenir"]
@@ -92,7 +92,7 @@ class ImageVerdict(BaseModel):
     nivel_riesgo: Literal["ALTO", "MEDIO", "BAJO"]
     color_semaforo: Literal["ROJO", "AMARILLO", "VERDE"]
     entidad_detectada: str          # "Nequi", "Daviplata", "No identificada", …
-    senales_detectadas: List[str]   # Máximo 4 señales encontradas
+    senales_detectadas: List[str] = Field(max_length=4)  # Gemini: máximo 4 señales
     url_qr_extraida: str            # URL del QR si hay uno; "" si no hay QR visible
     explicacion_ciudadana: str      # ≤ 25 palabras, español colombiano sencillo
     audio_guion: str                # ≤ 15 palabras, para leer en voz alta
@@ -106,11 +106,19 @@ class AnalyzeImageResponse(BaseModel):
     nivel_riesgo: str
     color_semaforo: str
     entidad_detectada: str
-    senales_detectadas: List[str]
+    senales_detectadas: List[str] = Field(max_length=5)  # Incluye la advertencia de QR del backend
     url_qr_extraida: Optional[str]
     qr_dominio_legitimo: Optional[bool]  # None si no había QR
     explicacion_ciudadana: str
     audio_guion: str
-    recomendaciones: List[str]
+    recomendaciones: List[str] = Field(min_length=2, max_length=2)
     evidencia_criptografica: EvidenciaCriptografica
     datos_abiertos_referencia: DatosAbiertosReferencia
+
+    @field_validator("recomendaciones")
+    @classmethod
+    def recomendaciones_no_vacias(cls, value: List[str]) -> List[str]:
+        trimmed = [item.strip() for item in value]
+        if any(not item for item in trimmed):
+            raise ValueError("Cada recomendación debe contener texto no vacío")
+        return trimmed

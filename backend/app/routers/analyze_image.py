@@ -46,6 +46,14 @@ def _dominio_es_legitimo(url: str) -> bool:
         return False
 
 
+def _recomendaciones_validas(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(isinstance(item, str) and bool(item.strip()) for item in value)
+    )
+
+
 @router.post("/analyze-image", response_model=AnalyzeImageResponse)
 async def analyze_image(
     imagen: UploadFile = File(..., description="Foto del comprobante (JPG o PNG)"),
@@ -114,6 +122,27 @@ async def analyze_image(
             resultado["senales_detectadas"].append(
                 f"El QR apunta a un dominio no oficial: {dominio_detectado}"
             )
+
+    # Reutiliza recomendaciones seguras ya definidas y conserva el resto del veredicto.
+    if not _recomendaciones_validas(resultado.get("recomendaciones")):
+        fallback_recommendations = IMAGE_FALLBACK.get("recomendaciones")
+        if not _recomendaciones_validas(fallback_recommendations):
+            raise HTTPException(
+                status_code=500,
+                detail="No fue posible preparar recomendaciones válidas para el análisis.",
+            )
+        resultado["recomendaciones"] = [item.strip() for item in fallback_recommendations]
+    else:
+        resultado["recomendaciones"] = [item.strip() for item in resultado["recomendaciones"]]
+
+    # Gemini aporta hasta cuatro señales y el endpoint puede añadir una advertencia QR.
+    # Si se rompe ese invariante, no se registran ni descartan señales: se responde con error.
+    senales = resultado.get("senales_detectadas")
+    if not isinstance(senales, list) or len(senales) > 5 or not all(isinstance(item, str) for item in senales):
+        raise HTTPException(
+            status_code=502,
+            detail="El análisis no produjo una lista de señales válida.",
+        )
 
     # ── 8. Registrar en el ledger (no se guarda la imagen, solo el veredicto) ─
     payload = {

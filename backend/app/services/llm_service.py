@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
 from typing import Optional
 
 import httpx
+from pydantic import ValidationError
 from app.models.schemas import LLMVerdict, ImageVerdict
 
 log = logging.getLogger("escudo.llm")
@@ -309,13 +310,13 @@ def analizar_imagen_con_llm(
     except FutTimeout:
         log.warning("Gemini Vision tardó más de %.0f s -> fallback imagen", TIMEOUT_IMAGEN)
         return None
-    except Exception as e:
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
         log.warning("Gemini Vision falló: %s -> fallback imagen", _limpio(e))
         return None
     try:
         verdict = ImageVerdict.model_validate_json(raw)
-    except Exception as e:
-        log.warning("JSON de imagen no cumple el esquema: %s -> fallback imagen", _limpio(e))
+    except ValidationError:
+        log.warning("JSON de imagen no cumple el esquema -> fallback imagen")
         return None
     if _COHERENTE.get(verdict.nivel_riesgo) != verdict.color_semaforo:
         log.warning(

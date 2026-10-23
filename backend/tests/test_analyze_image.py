@@ -4,11 +4,13 @@ import base64
 import os
 
 import pytest
+from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services import llm_service
-from app.models.schemas import ImageVerdict
+from app.models.schemas import AnalyzeImageResponse, ImageVerdict
+from app.services.image_offline_cache import IMAGE_FALLBACK
 # La BD de tests es gestionada por conftest.py: DATABASE_URL apunta a un archivo temporal.
 
 
@@ -147,6 +149,166 @@ def test_qr_dominio_sospechoso_escala_riesgo(monkeypatch):
     assert d["color_semaforo"] == "ROJO"
     # La señal del dominio debe aparecer en la lista
     assert any("dominio no oficial" in s for s in d["senales_detectadas"])
+
+
+def test_cuatro_senales_mas_advertencia_qr_conserva_las_cinco(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+    senales = ["Señal uno", "Señal dos", "Señal tres", "Señal cuatro"]
+    monkeypatch.setattr(
+        llm_service,
+        "_call_gemini_image",
+        lambda b64, mime, txt: _make_verdict(
+            senales_detectadas=senales,
+            url_qr_extraida="https://pagos-no-oficiales.example/tx",
+        ),
+    )
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/analyze-image",
+            files={"imagen": ("comprobante.jpg", _fake_image_bytes(), "image/jpeg")},
+            data={"texto": "Verificar comprobante."},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["senales_detectadas"] == senales + [
+        "El QR apunta a un dominio no oficial: pagos-no-oficiales.example"
+    ]
+
+
+@pytest.mark.parametrize("recommendations_count", [0, 1, 2, 3])
+def test_recomendaciones_cantidad_y_conservacion_de_senales(monkeypatch, recommendations_count):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+    signals = ["El nombre del remitente no coincide", "El monto fue alterado"]
+    recommendations = [f"Acción {i + 1}" for i in range(recommendations_count)]
+    monkeypatch.setattr(
+        llm_service,
+        "_call_gemini_image",
+        lambda b64, mime, txt: _make_verdict(
+            senales_detectadas=signals,
+            recomendaciones=recommendations,
+        ),
+    )
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/analyze-image",
+            files={"imagen": ("comprobante.jpg", _fake_image_bytes(), "image/jpeg")},
+            data={"texto": "Verificar comprobante."},
+        )
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["senales_detectadas"] == signals
+    if recommendations_count == 2:
+        assert body["recomendaciones"] == recommendations
+    else:
+        assert body["recomendaciones"] == IMAGE_FALLBACK["recomendaciones"]
+    assert len(body["recomendaciones"]) == 2
+    assert all(item.strip() for item in body["recomendaciones"])
+
+
+def test_recomendaciones_en_blanco_usan_fallback_sin_perder_senales(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+    signals = ["Comprobante con inconsistencia visual"]
+    monkeypatch.setattr(
+        llm_service,
+        "_call_gemini_image",
+        lambda b64, mime, txt: _make_verdict(
+            senales_detectadas=signals,
+            recomendaciones=["  ", "Acción válida"],
+        ),
+    )
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/analyze-image",
+            files={"imagen": ("comprobante.jpg", _fake_image_bytes(), "image/jpeg")},
+            data={"texto": "Verificar comprobante."},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["senales_detectadas"] == signals
+    assert r.json()["recomendaciones"] == IMAGE_FALLBACK["recomendaciones"]
+
+
+def test_recomendaciones_validas_se_recortan_en_respuesta(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+    monkeypatch.setattr(
+        llm_service,
+        "_call_gemini_image",
+        lambda b64, mime, txt: _make_verdict(
+            recomendaciones=["  Primera acción  ", " Segunda acción "]
+        ),
+    )
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/analyze-image",
+            files={"imagen": ("comprobante.jpg", _fake_image_bytes(), "image/jpeg")},
+            data={"texto": "Verificar comprobante."},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["recomendaciones"] == ["Primera acción", "Segunda acción"]
+
+
+def test_exceso_de_senales_del_modelo_activa_fallback_sin_truncar(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+    too_many_signals = [f"Señal {i}" for i in range(5)]
+    monkeypatch.setattr(
+        llm_service,
+        "_call_gemini_image",
+        lambda b64, mime, txt: _make_verdict(senales_detectadas=too_many_signals),
+    )
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/analyze-image",
+            files={"imagen": ("comprobante.jpg", _fake_image_bytes(), "image/jpeg")},
+            data={"texto": "Verificar comprobante."},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["senales_detectadas"] == IMAGE_FALLBACK["senales_detectadas"]
+    assert r.json()["senales_detectadas"] != too_many_signals
+
+
+def test_modelo_propaga_error_de_programacion_en_vez_de_fallback(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+
+    def raise_unexpected_error(*args):
+        raise RuntimeError("unexpected programming error")
+
+    monkeypatch.setattr(llm_service, "_call_gemini_image", raise_unexpected_error)
+    with pytest.raises(RuntimeError, match="unexpected programming error"):
+        llm_service.analizar_imagen_con_llm("image", "image/jpeg", "context")
+
+
+def test_respuesta_rechaza_recomendaciones_no_validas():
+    base = {
+        "id_analisis": "IMG-test",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "es_autentico": "FALSO",
+        "nivel_riesgo": "ALTO",
+        "color_semaforo": "ROJO",
+        "entidad_detectada": "Nequi",
+        "senales_detectadas": ["Señal"],
+        "url_qr_extraida": None,
+        "qr_dominio_legitimo": None,
+        "explicacion_ciudadana": "Explicación",
+        "audio_guion": "Peligro",
+        "recomendaciones": ["Primera", "   "],
+        "evidencia_criptografica": {
+            "hash_actual": "a",
+            "hash_anterior": "b",
+            "cadena_valida": True,
+            "qr_payload_url": "https://example.test/verify",
+        },
+        "datos_abiertos_referencia": {"fuente": "test", "coincidencias_similares_mes": 0},
+    }
+    with pytest.raises(ValidationError):
+        AnalyzeImageResponse.model_validate(base)
 
 
 def test_sin_qr_dominio_es_none(monkeypatch):
